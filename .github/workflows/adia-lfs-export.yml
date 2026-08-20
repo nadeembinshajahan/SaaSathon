@@ -1,1 +1,82 @@
-placeholder
+name: Temporary ADIA public-LFS export
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/adia-lfs-export.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Fetch exact public Git LFS objects
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p export
+          curl -fL --retry 6 --retry-delay 3 --retry-all-errors \
+            https://media.githubusercontent.com/media/adityakm24/crunchdao/main/Dataset/y_train_index.parquet \
+            -o export/y_train_index.parquet
+          curl -fL --retry 6 --retry-delay 3 --retry-all-errors \
+            https://media.githubusercontent.com/media/adityakm24/crunchdao/main/Dataset/X_train.parquet \
+            -o export/X_train.parquet
+          test "$(stat -c%s export/y_train_index.parquet)" = "100183"
+          test "$(stat -c%s export/X_train.parquet)" = "218514418"
+          sha256sum export/y_train_index.parquet export/X_train.parquet | tee export/SHA256SUMS
+
+      - name: Verify parquet readability and record schema
+        shell: bash
+        run: |
+          python -m pip install --disable-pip-version-check --quiet numpy pandas pyarrow
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          root = Path('export')
+          x = pd.read_parquet(root / 'X_train.parquet')
+          y = pd.read_parquet(root / 'y_train_index.parquet')
+          report = {
+              'x_shape': list(x.shape),
+              'x_index_names': list(x.index.names),
+              'x_columns': [str(c) for c in x.columns],
+              'x_dtypes': {str(k): str(v) for k, v in x.dtypes.items()},
+              'y_shape': list(y.shape),
+              'y_index_names': list(y.index.names),
+              'y_columns': [str(c) for c in y.columns],
+              'y_dtypes': {str(k): str(v) for k, v in y.dtypes.items()},
+              'x_head': x.reset_index().head(5).to_dict(orient='records'),
+              'y_head': y.reset_index().head(10).to_dict(orient='records'),
+          }
+          (root / 'schema_report.json').write_text(json.dumps(report, indent=2, default=str))
+          print(json.dumps(report, indent=2, default=str))
+          PY
+
+      - name: Upload labels immediately
+        uses: actions/upload-artifact@v4
+        with:
+          name: adia-y-train-index
+          path: |
+            export/y_train_index.parquet
+            export/schema_report.json
+            export/SHA256SUMS
+          retention-days: 1
+          compression-level: 0
+
+      - name: Upload raw training panel
+        uses: actions/upload-artifact@v4
+        with:
+          name: adia-raw-train-parquet
+          path: |
+            export/X_train.parquet
+            export/y_train_index.parquet
+            export/schema_report.json
+            export/SHA256SUMS
+          retention-days: 1
+          compression-level: 0
